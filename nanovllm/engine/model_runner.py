@@ -82,9 +82,43 @@ class ModelRunner:
     def prepare_block_tables(self, seqs: list[Sequence]):
         pass
 
-    # TODO
     def prepare_prefill(self, seqs: list[Sequence]):
-        pass
+        input_ids = []
+        positions = []
+        cu_seqlens_q = [0]
+        cu_seqlens_k = [0]
+        max_seqlen_q = 0
+        max_seqlen_k = 0
+        slot_mapping = []
+        block_tables = None
+        for seq in seqs:
+            seqlen = len(seq)
+            input_ids.extend(seq[seq.num_cached_tokens:])
+            positions.extend(list(range(seq.num_cached_tokens, seqlen)))
+            seqlen_q = seqlen - seq.num_cached_tokens
+            seqlen_k = seqlen
+            cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
+            cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
+            max_seqlen_q = max(seqlen_q, max_seqlen_q)
+            max_seqlen_k = max(seqlen_k, max_seqlen_k)
+            if not seq.block_table: # warmup
+                continue
+            for i in range(seq.num_cached_blocks, seq.num_blocks):
+                start = seq.block_table[i] + self.block_size
+                if i != seq.num_blocks - 1:
+                    end = start + self.block_size
+                else:
+                    end = start + seq.last_block_num_tokens
+                slot_mapping.extend(list(range(start, end)))
+        if cu_seqlens_k[-1] > cu_seqlens_q[-1]: # prefix cache
+            block_tables = self.prepare_block_tables(seqs)
+        input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        set_context(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables)
+        return input_ids, positions
 
     def prepare_decode(self, seqs: list[Sequence]):
         input_ids = [] # only the last token in decode mode
@@ -111,8 +145,12 @@ class ModelRunner:
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
         return temperatures
 
+    @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
-        pass
+        if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
+            return self.model.compute_logits(self.model(input_ids, positions))
+        else:
+            pass
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
@@ -122,6 +160,7 @@ class ModelRunner:
         reset_context()
         return token_ids
 
+    @torch.inference_mode()
     def capture_cudagraph(self):
         pass
     
