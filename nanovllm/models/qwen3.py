@@ -3,6 +3,9 @@ from torch import nn
 import torch.distributed as dist
 from transformers import Qwen3Config
 
+
+from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+
 class Qwen3Attention(nn.Module):
     
     def __init__(
