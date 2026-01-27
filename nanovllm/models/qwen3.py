@@ -5,6 +5,7 @@ from transformers import Qwen3Config
 
 
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from nanovllm.layers.layernorm import RMSNorm
 
 class Qwen3Attention(nn.Module):
     
