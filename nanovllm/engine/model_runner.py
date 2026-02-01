@@ -95,7 +95,7 @@ class ModelRunner:
             if hasattr(moudule, "k_cache") and hasattr(moudule, "v_cache"):
                 moudule.k_cache = self.kv_cache[0, layer_id]
                 moudule.v_cache = self.kv_cache[1, layer_id]
-                layer_id += 1
+                layer_id += 1 # each layer has its own kv_cache
 
     # TODO
     def prepare_block_tables(self, seqs: list[Sequence]):
@@ -122,7 +122,7 @@ class ModelRunner:
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
             if not seq.block_table: # warmup
                 continue
-            for i in range(seq.num_cached_blocks, seq.num_blocks):
+            for i in range(seq.num_cached_blocks, seq.num_blocks): # prefix cache
                 start = seq.block_table[i] + self.block_size
                 if i != seq.num_blocks - 1:
                     end = start + self.block_size
