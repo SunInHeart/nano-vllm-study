@@ -26,16 +26,16 @@ class Qwen3Attention(nn.Module):
     ) -> None:
         super().__init__()
         tp_size = dist.get_world_size()
-        self.total_num_heads = num_heads
+        self.total_num_heads = num_heads # 16
         assert self.total_num_heads % tp_size == 0
-        self.num_heads = self.total_num_heads // tp_size
-        self.total_num_kv_heads = num_kv_heads
+        self.num_heads = self.total_num_heads // tp_size # 16//tp
+        self.total_num_kv_heads = num_kv_heads # 8
         assert self.total_num_kv_heads % tp_size == 0
-        self.num_kv_heads = self.total_num_kv_heads // tp_size
-        self.head_dim = head_dim or hidden_size // self.total_num_heads
-        self.q_size = self.num_heads * self.head_dim
-        self.kv_size = self.num_kv_heads * self.head_dim
-        self.scaling = self.head_dim ** -0.5
+        self.num_kv_heads = self.total_num_kv_heads // tp_size # 8/tp
+        self.head_dim = head_dim or hidden_size // self.total_num_heads # 128 or 1024//16
+        self.q_size = self.num_heads * self.head_dim # 2048=16*128
+        self.kv_size = self.num_kv_heads * self.head_dim # 1024=8*128
+        self.scaling = self.head_dim ** -0.5 # scaling factor for the attention score, 1/sqrt(head_dim)
         self.qkv_bias = qkv_bias
 
         self.qkv_proj = QKVParallelLinear(
@@ -46,8 +46,8 @@ class Qwen3Attention(nn.Module):
             bias=qkv_bias,
         )
         self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            hidden_size,
+            self.total_num_heads * self.head_dim, # 2048=16*128
+            hidden_size, # 1024
             bias=False,
         )
         self.rotary_emb = get_rope(
@@ -72,16 +72,16 @@ class Qwen3Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        qkv = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q = q.view(-1, self.num_heads, self.head_dim)
-        k = k.view(-1, self.num_kv_heads, self.head_dim)
+        qkv = self.qkv_proj(hidden_states) # get porject qkv
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1) # split qkv to q,k,v
+        q = q.view(-1, self.num_heads, self.head_dim) # reshape q to (tokens, num_heads, head_dim)
+        k = k.view(-1, self.num_kv_heads, self.head_dim) # reshape k,v to (tokens, num_kv_heads, head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
         if not self.qkv_bias:
-            q = self.q_norm(q)
+            q = self.q_norm(q) # rmsnorm
             k = self.k_norm(k)
-        q, k = self.rotary_emb(positions, q, k)
-        o = self.attn(q, k, v)
+        q, k = self.rotary_emb(positions, q, k) # rotary will not chang q,k dimensions
+        o = self.attn(q, k, v) # calculate the attention (flash attention)
         output = self.o_proj(o.flatten(1, -1))
         return output
     
