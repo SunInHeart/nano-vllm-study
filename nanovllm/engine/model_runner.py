@@ -27,7 +27,7 @@ class ModelRunner:
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
-        self.model = Qwen3ForCausalLM(hf_config)
+        self.model = Qwen3ForCausalLM(hf_config) # get model structure and initialize null weights
         load_model(self.model, config.model)
         self.sampler = Sampler()
         self.warmup_model()
@@ -74,12 +74,28 @@ class ModelRunner:
         max_num_batched_tokens, max_model_len = self.config.max_num_batched_tokens, self.config.max_model_len
         num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs)
         seqs = [Sequence([0] * max_model_len) for _ in range(num_seqs)]
-        self.run(seqs, True)
+        self.run(seqs, True) # prefill only
         torch.cuda.empty_cache()
 
-    # TODO
     def allocate_kv_cache(self):
-        pass
+        config = self.config
+        hf_config = config.hf_config
+        free, total = torch.cuda.mem_get_info()
+        used = total - free
+        peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
+        current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
+        num_kv_heads = hf_config.num_key_value_heads // self.world_size
+        head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
+        block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * hf_config.torch_dtype.itemsize
+        config.num_kvcache_blocks = int(total * config.gpu_memory_utilization - used - peak + current) // block_bytes # peak-current代表动态计算中额外占用的显存（激活值）？
+        assert config.num_kvcache_blocks > 0
+        self.kv_cache = torch.empty(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, head_dim)
+        layer_id = 0
+        for moudule in self.model.modules:
+            if hasattr(moudule, "k_cache") and hasattr(moudule, "v_cache"):
+                moudule.k_cache = self.kv_cache[0, layer_id]
+                moudule.v_cache = self.kv_cache[1, layer_id]
+                layer_id += 1
 
     # TODO
     def prepare_block_tables(self, seqs: list[Sequence]):
