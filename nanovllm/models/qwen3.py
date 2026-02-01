@@ -8,7 +8,7 @@ from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 from nanovllm.layers.layernorm import RMSNorm
 from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
 from nanovllm.layers.activation import SiluAndMul
-
+from nanovllm.layers.rotary_embedding import get_rope
 
 class Qwen3Attention(nn.Module):
     
@@ -51,11 +51,11 @@ class Qwen3Attention(nn.Module):
             bias=False,
         )
         self.rotary_emb = get_rope(
-            self.head_dim,
-            rotary_dim=self.head_dim,
-            max_position=max_position,
-            base=rope_theta,
-            rope_scaling=rope_scaling,
+            self.head_dim, # 128
+            rotary_dim=self.head_dim, # 128
+            max_position=max_position, # 40960
+            base=rope_theta, # 1000000
+            rope_scaling=rope_scaling, # None 
         )
         self.attn = Attention(
             self.num_heads,
