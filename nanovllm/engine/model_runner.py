@@ -1,3 +1,4 @@
+import pickle
 import torch
 import torch.distributed as dist
 from multiprocessing.synchronize import Event
@@ -38,32 +39,53 @@ class ModelRunner:
         torch.set_default_dtype(default_dtype)
 
         if self.world_size > 1:
+            # dist.barrier prevent access shm before main process create it
             if rank == 0:
-                self.shm = SharedMemory(name="nanovllm", create=True, size=2**20)
+                self.shm = SharedMemory(name="nanovllm", create=True, size=2**20) # create
                 dist.barrier() # synchronize all processes
             else:
                 dist.barrier()
-                self.shm = SharedMemory(name="nanovllm", create=False)
+                self.shm = SharedMemory(name="nanovllm", create=False) # attach
                 self.loop()
 
-    # TODO
     def exit(self):
-        pass
+        if self.world_size > 1:
+            self.shm.close() # close access to shm
+            dist.barrier()
+            if self.rank == 0:
+                self.shm.unlink() # destroy shm block
+        
+        torch.cuda.synchronize()
+        dist.destroy_process_group()
 
-    # TODO
     def loop(self):
-        pass
+        while True:
+            method_name, args = self.read_shm()
+            self.call(method_name, *args)
+            if method_name == "exit":
+                break
 
-    # TODO
+    # other processes read from shm
     def read_shm(self):
-        pass
+        assert self.world_size > 1 and self.rank > 1
+        self.event.wait() # p
+        n = int.from_bytes(self.shm.buf[0:4], "little")
+        method_name, *args = pickle.loads(self.shm.buf[4:n+4])
+        self.event.clear()
+        return method_name, args
 
-    # TODO
-    def write_shm(self):
-        pass
+    # main process write to shm
+    def write_shm(self, method_name, *args):
+        assert self.world_size > 1 and self.rank == 0
+        data = pickle.dumps([method_name, *args])
+        n = len(data)
+        self.shm.buf[0:4] = n.to_bytes(4, "little") # little endian byteorder
+        self.shm.buf[4:n+4] = data
+        for event in self.event:
+            event.set() # v
 
     def call(self, method_name, *args):
-        if self.world_size > 1 and self.rank == 0:
+        if self.world_size > 1 and self.rank == 0: # main process drives other processes
             self.write_shm(method_name, *args)
         method = getattr(self, method_name, None)
         return method(*args)
